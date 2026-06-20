@@ -44,39 +44,66 @@ R2-Explorer brings a familiar Google Drive-like interface to your Cloudflare R2 
 > [!IMPORTANT]
 > When using C3 to create this project, select "no" when it asks if you want to deploy. You need to follow this project's [setup steps](https://github.com/cloudflare/templates/tree/main/r2-explorer-template#setup-steps) before deploying.
 
-## Getting Started
+## Authentication
 
-Outside of this repo, you can start a new project with this template using [C3](https://developers.cloudflare.com/pages/get-started/c3/) (the `create-cloudflare` CLI):
+This instance is **not** secured by Cloudflare Access. Instead it reuses the
+shared [`auth-service`](https://github.com/frankbracq/geneafan-workers) (WebAuthn
+passkey + Email OTP) under the **`geneafan`** tenant, so a single session works
+across all genealogie.app apps.
 
-```
-npm create cloudflare@latest -- --template=cloudflare/templates/r2-explorer-template
-```
+The gate lives in [`src/auth.ts`](src/auth.ts) and runs *in front* of the
+r2-explorer handler ([`src/index.ts`](src/index.ts)):
 
-A live public deployment of this template is available at [https://demo.r2explorer.com](https://demo.r2explorer.com)
+1. Verifies the `__authsvc` session cookie (ES256 JWT) against the tenant JWKS
+   at `https://auth.genealogie.app/.well-known/jwks.json`
+   (`iss=https://auth.genealogie.app`, `aud=geneafan`).
+2. Applies an **admin email allowlist** on top — a valid geneafan session is
+   necessary but not sufficient, because the dashboard exposes the whole
+   `gedcom-files` bucket. Unauthenticated browser requests are redirected to
+   `https://auth.genealogie.app/login?next=…`.
+
+Two prerequisites in `auth-service` (already configured in this repo's companion
+change):
+
+- The `geneafan` tenant must list `https://files.genealogie.app` in
+  `allowedRedirectOrigins` (`src/tenants.js`) so the post-login redirect back
+  here is honoured.
+- The cookie is scoped `Domain=.genealogie.app`, so this worker **must** be
+  served on a subdomain of `genealogie.app` — here `files.genealogie.app`
+  (see the `routes` entry in `wrangler.json`). It will **not** work on a
+  `*.workers.dev` URL.
 
 ## Setup Steps
 
-1. Install the project dependencies with a package manager of your choice:
+1. Install dependencies:
    ```bash
    npm install
    ```
-2. Create a [R2 Bucket](https://developers.cloudflare.com/r2/get-started/) with the name "r2-explorer-bucket":
+2. Create the R2 bucket (name must match `wrangler.json`):
    ```bash
-   npx wrangler r2 bucket create r2-explorer-bucket
+   npx wrangler r2 bucket create gedcom-files
    ```
-3. Deploy the project!
+3. Set the admin allowlist (comma/space-separated emails):
+   ```bash
+   echo "fbracq@kotsas.fr" | npx wrangler secret put ADMIN_EMAILS
+   ```
+4. Make sure `files.genealogie.app` is a custom-domain route on this worker
+   (declared in `wrangler.json`) and that the DNS zone is on this Cloudflare
+   account.
+5. Deploy:
    ```bash
    npx wrangler deploy
    ```
-4. Monitor your worker
+6. Monitor:
    ```bash
    npx wrangler tail
    ```
 
 ## Next steps
 
-By default this template is **readonly**.
+This instance is **readonly** by default (browse/preview only). To allow
+uploads/edits, flip `readonly` to `false` in
+[`src/index.ts`](src/index.ts) — but keep the admin allowlist in place.
 
-in order for you to enable editing, just update the `readonly` flag in your `src/index.ts` file.
-
-Its highly recommended that you setup security first, [learn more here](https://r2explorer.com/getting-started/security/).
+Consider giving the `preview_bucket_name` in `wrangler.json` a separate bucket
+from production so `wrangler dev` doesn't operate on live data.
